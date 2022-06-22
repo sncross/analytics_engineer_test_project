@@ -13,130 +13,145 @@ with recharge_subscriptions as (
 
   select * from {{ ref('dim_date') }}  
 
-), subscriber_cancels as (
+), created_ranges as (
+
+  /*
+    Getting min and max of dates in the dataset.
+    This is used to pass into the date series.
+  */  
 
   select 
-      subscription_cancelled_at
-    , customer_id 
-    , subscription_id  
-    , count(
-            case 
-              when is_subscription_active_cancelled = true
-              or is_subscription_payment_failure = true
-                then subscription_id
-              else null 
-            end 
-           ) 
-        over (
-               partition by customer_id 
-               order by subscription_cancelled_at
-               rows between unbounded preceding and current row
-             )                                          as subscriber_num_cancelled_subs                                     
-    , count(
-            case 
-              when is_subscription_active_cancelled = true
-              and is_same_day_cancel = true
-                then subscription_id
-              else null 
-            end 
-           ) 
-        over (
-               partition by customer_id 
-               order by subscription_cancelled_at
-               rows between unbounded preceding and current row
-             )                                          as subscriber_num_same_day_cancelled_subs
-    , count(
-            case 
-              when is_subscription_payment_failure = true
-                then subscription_id
-              else null 
-            end 
-           ) 
-        over (
-               partition by customer_id 
-               order by subscription_cancelled_at
-               rows between unbounded preceding and current row
-             )                                          as subscriber_num_passive_cancelled_subs                                                           
+      min(subscription_created_date)            as first_created_date
+    , max(subscription_created_date)            as last_created_date
   from recharge_subscriptions  
     
-), subscriber_creates as (
+), date_series as (
+
+  /*
+    Creating an objective date series in order
+    to handle different timestamps and fill in
+    dates with no activities. 
+  */  
+
+  select distinct 
+      dim_date.date_actual
+  from dim_date
+  inner join created_ranges
+    on dim_date.date_actual >= created_ranges.first_created_date
+    and dim_date.date_actual <= created_ranges.last_created_date
+  where 1 = 1
+
+), new_subscriptions as ( 
+
+  /*
+    Counting new subscriptions. I separated this
+    out due to the different timestamps. Joining
+    cancelled_at and created_at to the date_series
+    in the same query was producing odd results.
+  */  
+  
+  select 
+      date_series.date_actual
+    , count(subscription_id)                            as new_subscriptions
+    , count(
+            case 
+              when is_returning_subscription = true
+                then subscription_id
+              else null 
+            end
+           )                                            as returning_subscriptions
+    , count(distinct
+            case 
+              when is_first_subscription = true
+                then customer_id
+              else null 
+            end
+           )                                            as new_subscribers
+  from date_series
+  left join recharge_subscriptions
+    on date_series.date_actual = recharge_subscriptions.subscription_created_date
+  group by 1  
+
+), cancelled_subscriptions as (
+
+  /*
+    Counting cancelled subscriptions. I separated 
+    this out due to the different timestamps. Joining
+    cancelled_at and created_at to the date_series
+    in the same query was producing odd results.
+  */  
 
   select 
-      subscription_created_at
-    , customer_id 
-    , subscription_id  
-    , count(subscription_id) 
-        over (
-               partition by customer_id 
-               order by subscription_created_at
-               rows between unbounded preceding and current row
-             )                                          as subscriber_num_created_subs                                     
-  from recharge_subscriptions    
+      date_series.date_actual
+    , count(
+            case
+              when is_subscription_active_cancelled = true
+              or is_subscription_payment_failure = true 
+                then subscription_id
+              else null
+            end 
+           )                                            as num_cancelled_subscriptions    
+    , count(
+            case
+              when is_subscription_active_cancelled = true
+                then subscription_id
+              else null
+            end 
+           )                                            as active_cancelled_subscriptions  
+    , count(
+            case
+              when is_subscription_payment_failure = true
+                then subscription_id
+              else null
+            end 
+           )                                            as passive_cancelled_subscriptions
+    , count(
+            case
+              when is_same_day_cancel = true 
+                then subscription_id
+              else null
+            end 
+           )                                            as same_day_cancels
+    , count(
+            case
+              when has_null_cancellation_date = true 
+                then subscription_id
+              else null
+            end 
+           )                                            as num_null_cancel_dates       
+  from date_series
+  left join recharge_subscriptions
+    on date_series.date_actual = recharge_subscriptions.subscription_cancelled_date
+  where 1 = 1
+  group by 1  
 
-), add_subscriber_details as (
-
-  select distinct
-      recharge_subscriptions.subscription_id  
-    , recharge_subscriptions.customer_id
-    , recharge_subscriptions.subscription_created_at
-    , recharge_subscriptions.subscription_created_date 
-    , recharge_subscriptions.subscription_cancelled_at  
-    , recharge_subscriptions.subscription_cancelled_date
-    , recharge_subscriptions.is_subscription_active_cancelled  
-    , recharge_subscriptions.is_same_day_cancel
-    , recharge_subscriptions.is_subscription_payment_failure
-    , recharge_subscriptions.has_null_cancellation_date
-    , max(subscriber_num_cancelled_subs) 
-        over (
-               partition by recharge_subscriptions.customer_id 
-               order by recharge_subscriptions.subscription_created_at
-               --rows between unbounded preceding and current row
-             )                                          as prior_cancels
-    , max(subscriber_num_same_day_cancelled_subs) 
-        over (
-               partition by recharge_subscriptions.customer_id 
-               order by recharge_subscriptions.subscription_created_at
-               --rows between unbounded preceding and current row
-             )                                          as prior_same_day_cancels         
-    , max(subscriber_num_created_subs) 
-        over (
-               partition by recharge_subscriptions.customer_id 
-               order by recharge_subscriptions.subscription_created_at
-               --rows between unbounded preceding and current row
-             )                                          as prior_creates         
-    , min(recharge_subscriptions.subscription_created_at) 
-        over (
-               partition by recharge_subscriptions.customer_id 
-               order by recharge_subscriptions.subscription_created_at
-               --rows between unbounded preceding and current row
-             )                                          as first_subscription_at                                                                   
-  from recharge_subscriptions
-  left join subscriber_cancels
-    on recharge_subscriptions.customer_id = subscriber_cancels.customer_id
-    and recharge_subscriptions.subscription_created_at > subscriber_cancels.subscription_cancelled_at  
-  left join subscriber_creates
-    on recharge_subscriptions.customer_id = subscriber_creates.customer_id
-    and recharge_subscriptions.subscription_created_at > subscriber_creates.subscription_created_at    
-    
 ), final as (
 
-  select 
-      add_subscriber_details.* 
-    , case 
-        when prior_cancels = prior_creates 
-          then true 
-        else false 
-      end                                               as is_returning_subscription
-    , case 
-        when first_subscription_at = subscription_created_at 
-          then true 
-        else false 
-      end                                               as is_first_subscription           
-  from add_subscriber_details
+  /*
+    Joining new_subscriptions and cancelled
+    subscriptions together. We can join these
+    together, because the new subcriptions has
+    the date series. 
+  */    
+
+  select
+      new_subscriptions.date_actual
+    , new_subscriptions.new_subscriptions  
+    , new_subscriptions.returning_subscriptions
+    , new_subscriptions.new_subscribers
+    , cancelled_subscriptions.num_cancelled_subscriptions
+    , cancelled_subscriptions.active_cancelled_subscriptions
+    , cancelled_subscriptions.passive_cancelled_subscriptions
+    , cancelled_subscriptions.same_day_cancels
+    , cancelled_subscriptions.num_null_cancel_dates
+  from new_subscriptions
+  left join cancelled_subscriptions
+    on new_subscriptions.date_actual = cancelled_subscriptions.date_actual
+
 )
 
 select * 
 from final
---from final
+
 
 

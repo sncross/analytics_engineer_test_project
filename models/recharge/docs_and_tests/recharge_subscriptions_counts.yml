@@ -4,55 +4,29 @@ models:
   - name: recharge_subscriptions_counts
     description: "Subscriptions with prior subscriber counts and key dates/booleans."
     columns:
-      - name: subscription_id
-        description: ""
-        tests:
-          - unique
-          - not_null
-
-      - name: customer_id
-        description: ""
-        tests:
-          - not_null
-
-      - name: subscription_created_at
+      - name: date_actual
         description: ""
 
-      - name: subscription_created_date
+      - name: new_subscriptions
         description: ""
 
-      - name: subscription_cancelled_at
+      - name: returning_subscriptions
         description: ""
 
-      - name: subscription_cancelled_date
+      - name: new_subscribers
         description: ""
 
-      - name: is_subscription_active_cancelled
+      - name: num_cancelled_subscriptions
         description: ""
 
-      - name: is_same_day_cancel
+      - name: active_cancelled_subscriptions
         description: ""
 
-      - name: is_subscription_payment_failure
+      - name: passive_cancelled_subscriptions
         description: ""
 
-      - name: has_null_cancellation_date
+      - name: same_day_cancels
         description: ""
 
-      - name: prior_cancels
-        description: ""
-
-      - name: prior_same_day_cancels
-        description: ""
-
-      - name: prior_creates
-        description: ""
-
-      - name: first_subscription_at
-        description: ""
-
-      - name: is_returning_subscription
-        description: ""
-
-      - name: is_first_subscription
+      - name: num_null_cancel_dates
         description: ""

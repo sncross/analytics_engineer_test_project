@@ -10,6 +10,10 @@ with recharge_subscriptions as (
 
 ), subscription_properties_parsed as (
 
+  /*
+    CTE to parse out subscription properties json to columns. 
+  */
+
   select  
       subscription_id
     , max(
@@ -53,6 +57,10 @@ with recharge_subscriptions as (
   group by 1
 
 ), subscription_analytics_data_parsed as (
+
+  /*
+    CTE to parse out analytics json to columns. 
+  */
 
   select 
       subscription_id
@@ -98,6 +106,11 @@ with recharge_subscriptions as (
 
 
 ), subscription_details as (
+
+  /*
+    CTE to fix some data gaps and add flags to 
+    standardidize logic.
+  */
 
   select 
       recharge_subscriptions.* except (subscription_cancelled_at,subscription_cancelled_date)
@@ -149,29 +162,158 @@ with recharge_subscriptions as (
       end                                               as is_same_day_cancel
   from recharge_subscriptions  
 
-), final as (
+), subscriber_cancels as (
+
+  /*
+    CTE to add window functions for subscriber 
+    cancels on each subscription. This enables
+    `is_returning_subscription` flag below.
+  */
 
   select 
-      subscription_details.* except(
+      subscription_cancelled_at
+    , customer_id 
+    , subscription_id  
+    , count(
+            case 
+              when is_subscription_active_cancelled = true
+              or is_subscription_payment_failure = true
+                then subscription_id
+              else null 
+            end 
+           ) 
+        over (
+               partition by customer_id 
+               order by subscription_cancelled_at
+               rows between unbounded preceding and current row
+             )                                          as subscriber_num_cancelled_subs                                     
+    , count(
+            case 
+              when is_subscription_active_cancelled = true
+              and is_same_day_cancel = true
+                then subscription_id
+              else null 
+            end 
+           ) 
+        over (
+               partition by customer_id 
+               order by subscription_cancelled_at
+               rows between unbounded preceding and current row
+             )                                          as subscriber_num_same_day_cancelled_subs
+    , count(
+            case 
+              when is_subscription_payment_failure = true
+                then subscription_id
+              else null 
+            end 
+           ) 
+        over (
+               partition by customer_id 
+               order by subscription_cancelled_at
+               rows between unbounded preceding and current row
+             )                                          as subscriber_num_passive_cancelled_subs                                                           
+  from subscription_details  
+    
+), subscriber_creates as (
+
+  /*
+    CTE to add window functions for subscriber 
+    creations on each subscription. This enables
+    `is_returning_subscription` flag below.
+  */
+
+  select 
+      subscription_created_at
+    , customer_id 
+    , subscription_id  
+    , count(subscription_id) 
+        over (
+               partition by customer_id 
+               order by subscription_created_at
+               rows between unbounded preceding and current row
+             )                                          as subscriber_num_created_subs                                     
+  from subscription_details    
+
+), join_subscriber_details AS (
+
+  /*
+    Join in the subscriber CTEs with subscription
+    details for a final table. 
+  */  
+
+  select  
+      subscription_details.*
+    , max(subscriber_num_cancelled_subs) 
+        over (
+               partition by subscription_details.customer_id 
+               order by subscription_details.subscription_created_at
+               --rows between unbounded preceding and current row
+             )                                          as prior_cancels
+    , max(subscriber_num_same_day_cancelled_subs) 
+        over (
+               partition by subscription_details.customer_id 
+               order by subscription_details.subscription_created_at
+               --rows between unbounded preceding and current row
+             )                                          as prior_same_day_cancels         
+    , max(subscriber_num_created_subs) 
+        over (
+               partition by subscription_details.customer_id 
+               order by subscription_details.subscription_created_at
+               --rows between unbounded preceding and current row
+             )                                          as prior_creates         
+    , min(subscription_details.subscription_created_at) 
+        over (
+               partition by subscription_details.customer_id 
+               order by subscription_details.subscription_created_at
+               --rows between unbounded preceding and current row
+             )                                          as first_subscription_at   
+  from subscription_details
+  left join subscriber_cancels
+    on subscription_details.customer_id = subscriber_cancels.customer_id
+    and subscription_details.subscription_created_at > subscriber_cancels.subscription_cancelled_at  
+  left join subscriber_creates
+    on subscription_details.customer_id = subscriber_creates.customer_id
+    and subscription_details.subscription_created_at > subscriber_creates.subscription_created_at             
+
+), final as (
+
+  /*
+    Final join bringing everything together
+    as a final table.
+  */
+
+  select distinct
+      join_subscriber_details.* except(
                                        subscription_properties
                                      , subscription_utm_params
                                    )
     , subscription_properties_parsed.* except(
                                                subscription_id,is_add_on
                                              )
+    , subscription_analytics_data_parsed.* except(
+                                                   subscription_id
+                                                 )    
     , case 
         when is_add_on = 'True'
           then TRUE 
         else FALSE 
       end                                               as is_add_on
-    , subscription_analytics_data_parsed.* except(
-                                                   subscription_id
-                                                 )
-  from subscription_details
+     , case 
+        when join_subscriber_details.prior_cancels = join_subscriber_details.prior_creates 
+          then true 
+        else false 
+      end                                               as is_returning_subscription
+    , case 
+        when join_subscriber_details.first_subscription_at = join_subscriber_details.subscription_created_at 
+          then true 
+        else false 
+      end                                               as is_first_subscription  
+
+  from join_subscriber_details
   left join subscription_properties_parsed
-    on subscription_details.subscription_id = subscription_properties_parsed.subscription_id
+    on join_subscriber_details.subscription_id = subscription_properties_parsed.subscription_id
   left join subscription_analytics_data_parsed
-    on subscription_details.subscription_id = subscription_analytics_data_parsed.subscription_id   
+    on join_subscriber_details.subscription_id = subscription_analytics_data_parsed.subscription_id   
 
 )
 

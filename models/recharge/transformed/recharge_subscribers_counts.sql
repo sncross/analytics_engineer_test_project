@@ -15,6 +15,15 @@ with recharge_subscriptions as (
 
 ), union_event_dates as (
 
+  /*
+    This CTE unions together cancelled_at and 
+    created_at for each customer_id. This is to 
+    ensure that we don't miss an event for a customer. 
+    The alternative is to cross join customer_id with 
+    each date in the date series, but the union
+    was a bit more performant. 
+  */    
+
   select 
       subscription_created_date                                     as date_actual
     , customer_id 
@@ -31,6 +40,11 @@ with recharge_subscriptions as (
     
     
 ), customer_aggs as (
+
+  /*
+    This CTE is just aggregated critical 
+    subscription metrics by date and customer_id.
+  */    
 
   select 
       union_event_dates.date_actual
@@ -69,6 +83,11 @@ with recharge_subscriptions as (
   group by 1,2  
 
 ), customer_windows as (
+
+  /*
+    This CTE is handling all the necessary
+    window functions that are needed downstream.
+  */    
 
   select 
       date_actual
